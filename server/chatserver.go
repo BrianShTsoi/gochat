@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	// "io"
 	"fmt"
 	"net"
 	"os"
@@ -9,12 +10,9 @@ import (
 	"time"
 )
 
-var clients map[net.Conn]bool
-
 func main() {
 	var wg sync.WaitGroup
 	shutdownCh := make(chan struct{})
-	clients = make(map[net.Conn]bool)
 	
 	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8080")
     if err != nil {
@@ -32,6 +30,10 @@ func main() {
 	wg.Add(1)
 	go acceptConnection(shutdownCh, &wg, ln)
 
+	detectShutdown(shutdownCh, &wg, ln)
+}
+
+func detectShutdown(shutdownCh chan struct{}, wg *sync.WaitGroup, ln *net.TCPListener) {
 	scanner := bufio.NewScanner(os.Stdin)	
 	for scanner.Scan() {
 		if scanner.Text() == "/quit" {
@@ -42,14 +44,14 @@ func main() {
 			ln.Close()
 
 			fmt.Println("All connections closed, server shutdown")
-		}
+			break
+		} 
 	}
-	fmt.Println("Returning from main")
 }
-
 
 func acceptConnection(shutdownCh chan struct{}, wg *sync.WaitGroup, ln *net.TCPListener) {
 	defer wg.Done()
+	defer fmt.Println("wg done on accepct Connection")
 	for {
 		select {
 		case <-shutdownCh:
@@ -76,19 +78,22 @@ func handleConnection(c net.Conn, shutdownCh <-chan struct{}, wg *sync.WaitGroup
 	defer wg.Done()
 
 	fmt.Println("Connected:", c.RemoteAddr())
-	clients[c] = true
+	c.Write([]byte("Hello client\n"))
 	
 	for {
 		select {
 		case <-shutdownCh:
 			c.Write([]byte("Shutting down server...."))
-			delete(clients, c)
 			return
 		default:
 			buf := make([]byte, 1024)
+			c.SetReadDeadline(time.Now().Add(1 * time.Second))
 			_, err := c.Read(buf)
+
 			if err != nil {
-				delete(clients, c)
+                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                    continue
+                }
 				fmt.Println("Disconnected:", c.RemoteAddr())
 				return
 			}
