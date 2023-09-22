@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	// "io"
+	"strings"
 	"fmt"
 	"net"
 	"os"
@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
+var clients map[string]net.Conn
+
 func main() {
+	clients = make(map[string]net.Conn)
 	var wg sync.WaitGroup
 	shutdownCh := make(chan struct{})
 	
@@ -19,6 +22,7 @@ func main() {
         fmt.Println("Error resolving address:", err)
         os.Exit(1)
     }
+
     ln, err := net.ListenTCP("tcp", tcpAddr)
     if err != nil {
         fmt.Println("Error listening:", err)
@@ -37,9 +41,9 @@ func detectShutdown(shutdownCh chan struct{}, wg *sync.WaitGroup, ln *net.TCPLis
 	scanner := bufio.NewScanner(os.Stdin)	
 	for scanner.Scan() {
 		if scanner.Text() == "/quit" {
+			fmt.Println("Shutdown initiated")
 			close(shutdownCh)
 
-			fmt.Println("Shutting down server....")
 			wg.Wait()
 			ln.Close()
 
@@ -51,11 +55,10 @@ func detectShutdown(shutdownCh chan struct{}, wg *sync.WaitGroup, ln *net.TCPLis
 
 func acceptConnection(shutdownCh chan struct{}, wg *sync.WaitGroup, ln *net.TCPListener) {
 	defer wg.Done()
-	defer fmt.Println("wg done on accepct Connection")
 	for {
 		select {
 		case <-shutdownCh:
-			fmt.Println("No more connections")
+			fmt.Println("No longer accepting connections")
 			return
 		default:
 			ln.SetDeadline(time.Now().Add(1 * time.Second))
@@ -77,13 +80,16 @@ func handleConnection(c net.Conn, shutdownCh <-chan struct{}, wg *sync.WaitGroup
 	defer c.Close()
 	defer wg.Done()
 
+	clients[c.RemoteAddr().String()] = c
+
 	fmt.Println("Connected:", c.RemoteAddr())
-	c.Write([]byte("Hello client\n"))
+	c.Write([]byte("-----------Connected to Server. Type your message:-----------\n"))
 	
 	for {
 		select {
 		case <-shutdownCh:
-			c.Write([]byte("Shutting down server...."))
+			c.Write([]byte("Server is being shut down....\n"))
+			delete(clients, c.RemoteAddr().String())
 			return
 		default:
 			buf := make([]byte, 1024)
@@ -95,9 +101,31 @@ func handleConnection(c net.Conn, shutdownCh <-chan struct{}, wg *sync.WaitGroup
                     continue
                 }
 				fmt.Println("Disconnected:", c.RemoteAddr())
+				delete(clients, c.RemoteAddr().String())
 				return
 			}
-			c.Write(buf)
+
+			buf_str := strings.Trim(string(buf), "\x00")
+			buf_str = strings.TrimSpace(buf_str)
+			if buf_str == "/quit" {
+				c.Write([]byte("Leaving server....\n"))
+				fmt.Println("Disconnected:", c.RemoteAddr())
+				delete(clients, c.RemoteAddr().String())
+				return
+			}
+
+			msg := fmt.Sprintf("[%s]: %s\n", c.RemoteAddr(), buf_str)
+			fmt.Print(msg)
+			broadcastMessage(c.RemoteAddr().String(), msg)
 		}
+	}
+}
+
+func broadcastMessage(senderAddr string, msg string) {
+	for addr, c := range clients {
+		if addr == senderAddr {
+			continue
+		}
+		c.Write([]byte(msg))
 	}
 }
